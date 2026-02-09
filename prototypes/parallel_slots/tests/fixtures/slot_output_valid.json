@@ -1,0 +1,15 @@
+{
+  "version": "slot_output.v1",
+  "status": "ok",
+  "slot_id": "S1",
+  "title": "需求拆解",
+  "answer": "这里是该 slot 的分析结论。",
+  "assumptions": [
+    "假设用户希望在 2 周内落地。"
+  ],
+  "open_questions": [
+    "是否需要兼容旧系统？"
+  ],
+  "confidence": 0.78,
+  "notes_for_router": "可直接与其他 slot 结果并列输出。"
+}

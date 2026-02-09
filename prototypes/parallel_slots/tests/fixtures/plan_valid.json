@@ -1,0 +1,29 @@
+{
+  "version": "plan.v1",
+  "plan_id": "plan-001",
+  "language": "zh",
+  "task_summary": "给出一个可执行方案并说明关键风险。",
+  "slots": [
+    {
+      "slot_id": "S1",
+      "title": "需求拆解",
+      "worker_brief": "你是第 1/2 个 slot，先拆解用户目标和边界。",
+      "expected_output_schema_hint": "重点写 answer 和 assumptions。"
+    },
+    {
+      "slot_id": "S2",
+      "title": "方案草案",
+      "worker_brief": "你是第 2/2 个 slot，基于前一个 slot 的上下文产出方案草案。",
+      "expected_output_schema_hint": "重点写 answer 和 open_questions。"
+    }
+  ],
+  "router_notes": "建议并发执行两个 slot。",
+  "questions_to_user": [
+    {
+      "id": "Q1",
+      "question": "预算上限是多少？",
+      "why": "预算会影响方案复杂度。",
+      "default_assumption": "默认预算中等。"
+    }
+  ]
+}
