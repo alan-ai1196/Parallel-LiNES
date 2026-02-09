@@ -37,6 +37,15 @@ class SlotsRunResult:
     metrics: dict[str, Any]
 
 
+@dataclass
+class BaselineRunResult:
+    run_id: str
+    run_dir: Path
+    answer: str
+    payload: dict[str, Any]
+    metrics: dict[str, Any]
+
+
 class ParallelSlotsRouter:
     """Deterministic router: planner -> concurrent workers -> ordered concatenation."""
 
@@ -52,7 +61,7 @@ class ParallelSlotsRouter:
         self._runs_root = Path(runs_root)
 
     def run_slots(self, user_input: str, run_id: str | None = None) -> SlotsRunResult:
-        run_id = run_id or self._build_run_id()
+        run_id = run_id or self._build_run_id(mode="slots")
         run_dir = self._runs_root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -149,6 +158,49 @@ class ParallelSlotsRouter:
             metrics=metrics,
         )
 
+    def run_baseline(self, user_input: str, run_id: str | None = None) -> BaselineRunResult:
+        run_id = run_id or self._build_run_id(mode="baseline")
+        run_dir = self._runs_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+
+        started_at = datetime.now(timezone.utc)
+        run_start = time.perf_counter()
+
+        answer, api_metrics = self._client.call_baseline_with_metrics(user_input)
+
+        finished_at = datetime.now(timezone.utc)
+        total_duration_ms = (time.perf_counter() - run_start) * 1000
+
+        metrics = {
+            "run_id": run_id,
+            "mode": "baseline",
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "total_duration_ms": round(total_duration_ms, 2),
+            "api_calls": [metric.to_dict() for metric in api_metrics],
+            "token_usage": _sum_tokens(api_metrics),
+        }
+
+        payload = {
+            "run_id": run_id,
+            "mode": "baseline",
+            "user_input": user_input,
+            "answer": answer,
+            "metrics": metrics,
+        }
+
+        (run_dir / "baseline_answer.txt").write_text(answer, encoding="utf-8")
+        self._write_json(run_dir / "baseline_final.json", payload)
+        self._write_json(run_dir / "baseline_metrics.json", metrics)
+
+        return BaselineRunResult(
+            run_id=run_id,
+            run_dir=run_dir,
+            answer=answer,
+            payload=payload,
+            metrics=metrics,
+        )
+
     def _run_single_slot(
         self,
         user_input: str,
@@ -182,10 +234,10 @@ class ParallelSlotsRouter:
         )
 
     @staticmethod
-    def _build_run_id() -> str:
+    def _build_run_id(mode: str) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         suffix = uuid4().hex[:8]
-        return f"slots_{timestamp}_{suffix}"
+        return f"{mode}_{timestamp}_{suffix}"
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:

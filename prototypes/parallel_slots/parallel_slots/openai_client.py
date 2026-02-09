@@ -44,6 +44,12 @@ Constraints:
 """
 
 
+_BASELINE_SYSTEM_PROMPT = """You are the baseline responder for comparison.
+Provide one direct answer to the user input with no decomposition into slots.
+No function calling and no tool usage.
+"""
+
+
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
@@ -214,6 +220,40 @@ class OpenAIParallelSlotsClient:
             )
             return error_result, exc.metrics
 
+    def call_baseline(self, user_input: str) -> str:
+        answer, _ = self.call_baseline_with_metrics(user_input)
+        return answer
+
+    def call_baseline_with_metrics(self, user_input: str) -> tuple[str, list[ApiCallMetric]]:
+        input_messages = [
+            {"role": "system", "content": _BASELINE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Answer this user request directly in one response.\n\n"
+                    f"user_input:\n{user_input}"
+                ),
+            },
+        ]
+
+        response, metrics = self._responses_create_with_retries(
+            operation="baseline",
+            model=self._settings.worker_model,
+            temperature=self._settings.worker_temperature,
+            input_messages=input_messages,
+            text_format=None,
+        )
+        output_text = self._extract_response_text(response)
+        if not output_text:
+            if metrics:
+                metrics[-1].parse_ok = False
+                metrics[-1].error = "baseline_output_error: empty output_text"
+            raise OpenAICallError("baseline output text is empty", metrics=metrics)
+
+        if metrics:
+            metrics[-1].parse_ok = True
+        return output_text.strip(), metrics
+
     def _call_structured_json(
         self,
         *,
@@ -270,18 +310,22 @@ class OpenAIParallelSlotsClient:
         model: str,
         temperature: float,
         input_messages: list[dict[str, Any]],
-        text_format: dict[str, Any],
+        text_format: dict[str, Any] | None,
     ) -> tuple[Any, list[ApiCallMetric]]:
         metrics: list[ApiCallMetric] = []
 
         for attempt in range(1, self._settings.max_retries + 2):
             start_time = time.perf_counter()
             try:
+                request_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "temperature": temperature,
+                    "input": input_messages,
+                }
+                if text_format is not None:
+                    request_kwargs["text"] = text_format
                 response = self._client.responses.create(
-                    model=model,
-                    temperature=temperature,
-                    input=input_messages,
-                    text=text_format,
+                    **request_kwargs,
                 )
                 duration_ms = (time.perf_counter() - start_time) * 1000
                 usage = self._extract_usage(response)
@@ -346,17 +390,24 @@ class OpenAIParallelSlotsClient:
 
     @staticmethod
     def _parse_structured_json(response: Any) -> dict[str, Any]:
-        text = getattr(response, "output_text", None)
+        text = OpenAIParallelSlotsClient._extract_response_text(response)
         if text:
             return json.loads(text)
+
+        raise ValueError("Responses API payload did not contain output_text")
+
+    @staticmethod
+    def _extract_response_text(response: Any) -> str | None:
+        text = getattr(response, "output_text", None)
+        if text:
+            return text
 
         if hasattr(response, "model_dump"):
             dumped = response.model_dump()
             extracted = OpenAIParallelSlotsClient._extract_text_from_dump(dumped)
             if extracted is not None:
-                return json.loads(extracted)
-
-        raise ValueError("Responses API payload did not contain output_text")
+                return extracted
+        return None
 
     @staticmethod
     def _extract_text_from_dump(payload: dict[str, Any]) -> str | None:
