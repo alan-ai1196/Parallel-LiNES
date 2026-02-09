@@ -9,7 +9,14 @@ description = "Parallel Slots Prototype"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "jsonschema>=4.23.0",
+  "openai>=1.54.4",
   "python-dotenv>=1.0.1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0"
 ]
 
 [tool.setuptools.packages.find]
