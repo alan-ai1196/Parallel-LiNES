@@ -26,6 +26,8 @@ Constraints:
 - Set version to plan.v1.
 - Decide language as zh or en (default zh unless user input is clearly English).
 - Provide slots that best decompose the task.
+- Workers are mutually invisible: each worker cannot see other workers' outputs.
+- Design slots to be independently executable by router parallelism.
 - Each slot.worker_brief must mention slot position context in the full plan.
 - router_notes can suggest execution ordering/concurrency.
 - questions_to_user can be empty; router will continue execution regardless.
