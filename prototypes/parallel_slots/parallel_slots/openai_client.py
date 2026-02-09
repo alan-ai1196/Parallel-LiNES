@@ -25,7 +25,7 @@ Return ONLY one JSON object that strictly follows schema plan.v1.
 Constraints:
 - Set version to plan.v1.
 - Decide language as zh or en (default zh unless user input is clearly English).
-- Provide 1-10 slots.
+- Provide slots that best decompose the task.
 - Each slot.worker_brief must mention slot position context in the full plan.
 - router_notes can suggest execution ordering/concurrency.
 - questions_to_user can be empty; router will continue execution regardless.

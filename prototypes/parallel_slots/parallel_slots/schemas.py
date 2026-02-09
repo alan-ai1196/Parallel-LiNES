@@ -46,7 +46,7 @@ PLAN_JSON_SCHEMA: dict[str, Any] = {
         "slots": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 10,
+            "maxItems": 256,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
