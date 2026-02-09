@@ -1,0 +1,13 @@
+state.md
+.env
+.env.*
+!.env.example
+runs/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
