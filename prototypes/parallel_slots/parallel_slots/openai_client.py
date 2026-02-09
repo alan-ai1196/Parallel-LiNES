@@ -313,6 +313,7 @@ class OpenAIParallelSlotsClient:
         text_format: dict[str, Any] | None,
     ) -> tuple[Any, list[ApiCallMetric]]:
         metrics: list[ApiCallMetric] = []
+        response_format = self._convert_text_format_to_response_format(text_format)
 
         for attempt in range(1, self._settings.max_retries + 2):
             start_time = time.perf_counter()
@@ -362,6 +363,24 @@ class OpenAIParallelSlotsClient:
                     )
                 )
 
+                if self._should_fallback_to_chat_completions(exc):
+                    try:
+                        chat_response, chat_metrics = self._chat_completions_create_with_retries(
+                            operation=operation,
+                            model=model,
+                            temperature=temperature,
+                            input_messages=input_messages,
+                            response_format=response_format,
+                        )
+                        metrics.extend(chat_metrics)
+                        return chat_response, metrics
+                    except OpenAICallError as fallback_exc:
+                        metrics.extend(fallback_exc.metrics)
+                        raise OpenAICallError(
+                            f"{operation} API call failed after responses->chat fallback: {fallback_exc}",
+                            metrics=metrics,
+                        ) from fallback_exc
+
                 if retryable and attempt <= self._settings.max_retries:
                     self._sleep_with_backoff(attempt)
                     continue
@@ -372,6 +391,76 @@ class OpenAIParallelSlotsClient:
                 ) from exc
 
         raise OpenAICallError(f"{operation} exhausted retries", metrics=metrics)
+
+    def _chat_completions_create_with_retries(
+        self,
+        *,
+        operation: str,
+        model: str,
+        temperature: float,
+        input_messages: list[dict[str, Any]],
+        response_format: dict[str, Any] | None,
+    ) -> tuple[Any, list[ApiCallMetric]]:
+        metrics: list[ApiCallMetric] = []
+
+        for attempt in range(1, self._settings.max_retries + 2):
+            start_time = time.perf_counter()
+            try:
+                request_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "temperature": temperature,
+                    "messages": input_messages,
+                }
+                if response_format is not None:
+                    request_kwargs["response_format"] = response_format
+                response = self._client.chat.completions.create(
+                    **request_kwargs,
+                )
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                usage = self._extract_usage(response)
+                metrics.append(
+                    ApiCallMetric(
+                        operation=operation,
+                        model=model,
+                        attempt=attempt,
+                        duration_ms=duration_ms,
+                        success=True,
+                        parse_ok=None,
+                        error=None,
+                        input_tokens=usage.get("input_tokens"),
+                        output_tokens=usage.get("output_tokens"),
+                        total_tokens=usage.get("total_tokens"),
+                    )
+                )
+                return response, metrics
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                retryable = self._is_retryable_error(exc)
+                metrics.append(
+                    ApiCallMetric(
+                        operation=operation,
+                        model=model,
+                        attempt=attempt,
+                        duration_ms=duration_ms,
+                        success=False,
+                        parse_ok=None,
+                        error=f"{type(exc).__name__}: {exc}",
+                        input_tokens=None,
+                        output_tokens=None,
+                        total_tokens=None,
+                    )
+                )
+
+                if retryable and attempt <= self._settings.max_retries:
+                    self._sleep_with_backoff(attempt)
+                    continue
+
+                raise OpenAICallError(
+                    f"{operation} chat completion call failed at attempt {attempt}: {exc}",
+                    metrics=metrics,
+                ) from exc
+
+        raise OpenAICallError(f"{operation} chat completion exhausted retries", metrics=metrics)
 
     def _sleep_with_backoff(self, attempt: int) -> None:
         base_delay_s = self._settings.retry_base_delay_ms / 1000.0
@@ -387,6 +476,21 @@ class OpenAIParallelSlotsClient:
             status_code = getattr(exc, "status_code", None)
             return status_code in _RETRYABLE_STATUS_CODES
         return False
+
+    @staticmethod
+    def _should_fallback_to_chat_completions(exc: Exception) -> bool:
+        if isinstance(exc, APIStatusError):
+            status_code = getattr(exc, "status_code", None)
+            return status_code == 404
+        return False
+
+    @staticmethod
+    def _convert_text_format_to_response_format(
+        text_format: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if text_format is None:
+            return None
+        return text_format.get("format")
 
     @staticmethod
     def _parse_structured_json(response: Any) -> dict[str, Any]:
@@ -416,6 +520,16 @@ class OpenAIParallelSlotsClient:
             for content in item.get("content", []):
                 if content.get("type") in {"output_text", "text"} and content.get("text"):
                     return content["text"]
+        choices = payload.get("choices", [])
+        for choice in choices:
+            message = choice.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                return content
+            if isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text" and part.get("text"):
+                        return part["text"]
         return None
 
     @staticmethod
