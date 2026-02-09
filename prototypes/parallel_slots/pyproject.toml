@@ -19,6 +19,9 @@ dev = [
   "pytest>=8.3.0"
 ]
 
+[project.scripts]
+parallel-slots = "parallel_slots.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["parallel_slots*"]
