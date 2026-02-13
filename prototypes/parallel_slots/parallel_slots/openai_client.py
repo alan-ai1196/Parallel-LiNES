@@ -29,9 +29,13 @@ Constraints:
 - Workers are mutually invisible: each worker cannot see other workers' outputs.
 - Design slots to be independently executable by router parallelism.
 - Each slot.worker_brief must mention slot position context in the full plan.
+- Include tool_contract even when tools are disabled.
+- Every slot must include tool_requests; each tool request includes call_id, tool_name, args, bind_var, required.
+- Every slot must include depends_on, budget(max_tokens, priority), and risk(low|medium|high).
+- output_skeleton must contain slot placeholders like {{S1}}, {{S2}} for composable assembly.
 - router_notes can suggest execution ordering/concurrency.
 - questions_to_user can be empty; router will continue execution regardless.
-- No function calling and no tool usage.
+- Do not execute tools; only plan tool contracts.
 """
 
 
@@ -42,6 +46,11 @@ Constraints:
 - Use status=ok when successful.
 - Keep slot_id/title aligned with current slot context.
 - answer should focus on this slot only while respecting full-plan context.
+- Always inspect slot_context.injected first, then reason.
+- Each slot_context.injected value follows evidence_pack.v1: {"items":[{"source_type","source_id","title","snippet","meta"}]}.
+- evidence_used must only reference bind vars present in slot_context.injected.
+- unsupported_claims must list claims not grounded by injected evidence.
+- needs_tools must list bind vars required for more realistic grounded output.
 - No function calling and no tool usage.
 """
 
@@ -150,8 +159,20 @@ class OpenAIParallelSlotsClient:
         slot: dict[str, Any],
         slot_index: int,
         slot_total: int,
+        slot_context: dict[str, Any],
+        quality_guardrails: str | None = None,
+        temperature_override: float | None = None,
     ) -> dict[str, Any]:
-        slot_output, _ = self.call_worker_with_metrics(user_input, plan, slot, slot_index, slot_total)
+        slot_output, _ = self.call_worker_with_metrics(
+            user_input,
+            plan,
+            slot,
+            slot_index,
+            slot_total,
+            slot_context,
+            quality_guardrails=quality_guardrails,
+            temperature_override=temperature_override,
+        )
         return slot_output
 
     def call_worker_with_metrics(
@@ -161,6 +182,9 @@ class OpenAIParallelSlotsClient:
         slot: dict[str, Any],
         slot_index: int,
         slot_total: int,
+        slot_context: dict[str, Any],
+        quality_guardrails: str | None = None,
+        temperature_override: float | None = None,
     ) -> tuple[dict[str, Any], list[ApiCallMetric]]:
         slot_overview = [
             {
@@ -176,6 +200,8 @@ class OpenAIParallelSlotsClient:
                 "plan_id": plan["plan_id"],
                 "language": plan["language"],
                 "task_summary": plan["task_summary"],
+                "tool_contract": plan["tool_contract"],
+                "output_skeleton": plan["output_skeleton"],
                 "router_notes": plan.get("router_notes", ""),
                 "slots_overview": slot_overview,
             },
@@ -186,30 +212,41 @@ class OpenAIParallelSlotsClient:
                 "title": slot["title"],
                 "worker_brief": slot["worker_brief"],
                 "expected_output_schema_hint": slot["expected_output_schema_hint"],
+                "tool_requests": slot["tool_requests"],
+                "depends_on": slot["depends_on"],
+                "budget": slot["budget"],
+                "risk": slot["risk"],
             },
+            "slot_context": slot_context,
         }
+
+        user_prompt = (
+            "Produce slot_output.v1 for the following context.\n"
+            "Do not add any non-JSON text.\n\n"
+            + json.dumps(worker_context, ensure_ascii=False, indent=2)
+        )
+        if quality_guardrails:
+            user_prompt = f"{user_prompt}\n\nrouter_quality_guardrails:\n{quality_guardrails}"
 
         input_messages = [
             {"role": "system", "content": _WORKER_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": (
-                    "Produce slot_output.v1 for the following context.\n"
-                    "Do not add any non-JSON text.\n\n"
-                    + json.dumps(worker_context, ensure_ascii=False, indent=2)
-                ),
+                "content": user_prompt,
             },
         ]
 
+        max_output_tokens = slot.get("budget", {}).get("max_tokens")
         try:
             slot_output, metrics = self._call_structured_json(
                 operation=f"worker:{slot['slot_id']}",
                 model=self._settings.worker_model,
-                temperature=self._settings.worker_temperature,
+                temperature=temperature_override or self._settings.worker_temperature,
                 input_messages=input_messages,
                 text_format=worker_text_format(),
                 validator=validate_slot_output,
                 structured_retry_count=1,
+                max_output_tokens=max_output_tokens,
             )
             slot_output["slot_id"] = slot["slot_id"]
             slot_output["title"] = slot["title"]
@@ -220,6 +257,9 @@ class OpenAIParallelSlotsClient:
                 title=slot["title"],
                 reason=f"Structured generation failed: {exc}",
             )
+            missing_required = slot_context.get("missing_required", [])
+            if isinstance(missing_required, list):
+                error_result["needs_tools"] = [str(item) for item in missing_required]
             return error_result, exc.metrics
 
     def call_baseline(self, user_input: str) -> str:
@@ -266,6 +306,7 @@ class OpenAIParallelSlotsClient:
         text_format: dict[str, Any],
         validator: Callable[[dict[str, Any]], dict[str, Any]],
         structured_retry_count: int,
+        max_output_tokens: int | None = None,
     ) -> tuple[dict[str, Any], list[ApiCallMetric]]:
         metrics: list[ApiCallMetric] = []
 
@@ -277,6 +318,7 @@ class OpenAIParallelSlotsClient:
                     temperature=temperature,
                     input_messages=input_messages,
                     text_format=text_format,
+                    max_output_tokens=max_output_tokens,
                 )
             except OpenAICallError as exc:
                 metrics.extend(exc.metrics)
@@ -313,6 +355,7 @@ class OpenAIParallelSlotsClient:
         temperature: float,
         input_messages: list[dict[str, Any]],
         text_format: dict[str, Any] | None,
+        max_output_tokens: int | None = None,
     ) -> tuple[Any, list[ApiCallMetric]]:
         metrics: list[ApiCallMetric] = []
         response_format = self._convert_text_format_to_response_format(text_format)
@@ -327,6 +370,8 @@ class OpenAIParallelSlotsClient:
                 }
                 if text_format is not None:
                     request_kwargs["text"] = text_format
+                if max_output_tokens is not None:
+                    request_kwargs["max_output_tokens"] = max_output_tokens
                 response = self._client.responses.create(
                     **request_kwargs,
                 )
@@ -373,6 +418,7 @@ class OpenAIParallelSlotsClient:
                             temperature=temperature,
                             input_messages=input_messages,
                             response_format=response_format,
+                            max_output_tokens=max_output_tokens,
                         )
                         metrics.extend(chat_metrics)
                         return chat_response, metrics
@@ -402,6 +448,7 @@ class OpenAIParallelSlotsClient:
         temperature: float,
         input_messages: list[dict[str, Any]],
         response_format: dict[str, Any] | None,
+        max_output_tokens: int | None = None,
     ) -> tuple[Any, list[ApiCallMetric]]:
         metrics: list[ApiCallMetric] = []
 
@@ -415,6 +462,8 @@ class OpenAIParallelSlotsClient:
                 }
                 if response_format is not None:
                     request_kwargs["response_format"] = response_format
+                if max_output_tokens is not None:
+                    request_kwargs["max_completion_tokens"] = max_output_tokens
                 response = self._client.chat.completions.create(
                     **request_kwargs,
                 )

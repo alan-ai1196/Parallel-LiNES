@@ -3,20 +3,62 @@
   "plan_id": "plan-001",
   "language": "zh",
   "task_summary": "给出一个可执行方案并说明关键风险。",
+  "tool_contract": {
+    "enabled": false,
+    "mode": "mock",
+    "notes": "MVP 阶段保留工具合约字段，不执行工具。"
+  },
   "slots": [
     {
       "slot_id": "S1",
       "title": "需求拆解",
       "worker_brief": "你是第 1/2 个 slot，先拆解用户目标和边界。",
-      "expected_output_schema_hint": "重点写 answer 和 assumptions。"
+      "expected_output_schema_hint": "重点写 answer 和 assumptions。",
+      "tool_requests": [
+        {
+          "call_id": "call_s1_market_scan",
+          "tool_name": "web.search",
+          "args": {
+            "query": "项目背景信息"
+          },
+          "bind_var": "market_scan",
+          "required": false
+        }
+      ],
+      "depends_on": [],
+      "budget": {
+        "max_tokens": 800,
+        "priority": 8
+      },
+      "risk": "low"
     },
     {
       "slot_id": "S2",
       "title": "方案草案",
       "worker_brief": "你是第 2/2 个 slot，基于前一个 slot 的上下文产出方案草案。",
-      "expected_output_schema_hint": "重点写 answer 和 open_questions。"
+      "expected_output_schema_hint": "重点写 answer 和 open_questions。",
+      "tool_requests": [
+        {
+          "call_id": "call_s2_cost_sheet",
+          "tool_name": "file.read",
+          "args": {
+            "path": "cost.md"
+          },
+          "bind_var": "cost_sheet",
+          "required": true
+        }
+      ],
+      "depends_on": [
+        "S1"
+      ],
+      "budget": {
+        "max_tokens": 900,
+        "priority": 9
+      },
+      "risk": "medium"
     }
   ],
+  "output_skeleton": "{{S1}}\n\n---\n\n{{S2}}",
   "router_notes": "建议并发执行两个 slot。",
   "questions_to_user": [
     {

@@ -10,6 +10,15 @@
   "open_questions": [
     "是否需要兼容旧系统？"
   ],
+  "evidence_used": [
+    "market_scan"
+  ],
+  "unsupported_claims": [
+    "若预算翻倍可在一周内上线（未提供证据）。"
+  ],
+  "needs_tools": [
+    "cost_sheet"
+  ],
   "confidence": 0.78,
   "notes_for_router": "可直接与其他 slot 结果并列输出。"
 }

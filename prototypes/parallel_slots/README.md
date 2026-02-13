@@ -7,17 +7,21 @@
 ### Planner (浅层规划)
 - 输入：`user_input`。
 - 输出：严格结构化的 `plan.v1` JSON（Structured Outputs, strict=true）。
-- 核心字段：`plan_id`、`language`、`task_summary`、`slots[]`、`router_notes`、`questions_to_user`。
+- 核心字段：`plan_id`、`language`、`task_summary`、`tool_contract`、`slots[]`、`output_skeleton`、`router_notes`、`questions_to_user`。
+- 每个 `slots[]` 必含：`tool_requests[]`（`call_id/tool_name/args/bind_var/required`）、`depends_on[]`、`budget`、`risk`。
 
 ### Router (确定性调度)
 - 调用 Planner 获取完整 Plan。
-- 并发调用 Worker（并发度受 `MAX_CONCURRENCY` 控制）。
+- 按 `depends_on` 进行依赖批次调度；同一批次并发调用 Worker（并发度受 `MAX_CONCURRENCY` 控制）。
 - 不做 merge / 去重融合，只按 slot 顺序拼接结果，便于观察原始并行输出。
+- 为每个 slot 注入 `slot_context.injected`（统一 `evidence_pack.v1`：`items[{source_type,source_id,title,snippet,meta}]`）与 `slot_context.missing_required`（required 工具缺失列表）。
+- 内置语义健康检查闸门：识别退化输出并自动重试 1 次，仍失败则将该 slot 置为 `status=error` 并保留原始输出片段。
 - 将产物写入 `runs/<run_id>/`。
 
 ### Worker (深层填空)
-- 输入包含：完整 Plan 概览、当前 slot 上下文（`slot_id/slot_index/slot_total`）、用户原始输入。
+- 输入包含：完整 Plan 概览、当前 slot 上下文（`slot_id/slot_index/slot_total`）、`slot_context` 注入区、用户原始输入。
 - 输出：严格结构化 `slot_output.v1` JSON（Structured Outputs, strict=true）。
+- 证据依赖信号字段：`evidence_used[]`、`unsupported_claims[]`、`needs_tools[]`。
 - 若结构化输出失败（自动重试后仍失败），返回 `status="error"` 的合法 SlotOutput，Router 继续执行其他 slots。
 
 ### Baseline
@@ -25,7 +29,7 @@
 - 用于与 slots 模式对比耗时与 token。
 
 ### MVP hard constraints
-- 禁止 function calling / tools。
+- 禁止 function calling / 实际 tools 执行（仅保留可执行工具合约字段与注入接口）。
 - Planner 与 Worker 均使用 JSON Schema 严格结构化输出。
 - Router 只做顺序拼接，不做语义融合。
 
